@@ -97,16 +97,16 @@ async fn handle_client(
 ) {
     let mut buf = String::new();
     let mut msg = String::new();
-    // TODO dev only!!!!
-    let user = User {
-        id: 1,
-        name: "admin12_user123".to_string(),
-        aes_key: "123".to_string(),
-    };
-    // let Some(user) = auth_client(&db, &mut stream, rsa_key, &mut buf).await else {
-    //     let _ = writeln!(stream.get_mut(), "ERRO de autenticacao").await;
-    //     return;
+    //  dev only!!!!
+    // let user = User {
+    //     id: 1,
+    //     name: "admin12_user123".to_string(),
+    //     aes_key: "123".to_string(),
     // };
+    let Some(user) = auth_client(&db, &mut stream, rsa_key, &mut buf).await else {
+        let _ = writeln!(stream.get_mut(), "ERRO de autenticacao").await;
+        return;
+    };
     buf.clear();
     let mut closed = false;
     'run: while !closed {

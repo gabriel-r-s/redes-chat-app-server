@@ -26,8 +26,8 @@ impl User {
         let mut get_id = db
             .prepare(
                 r#"
-            SELECT id FROM users
-            WHERE name = ?
+        SELECT id FROM users
+        WHERE name = ?
             "#,
             )
             .unwrap();
@@ -43,9 +43,9 @@ impl User {
         let mut insert_message = db
             .prepare(
                 r#"
-            INSERT INTO sent_msgs (msg)
-            VALUES(?)
-            RETURNING id
+        INSERT INTO sent_msgs (msg)
+        VALUES(?)
+        RETURNING id
             "#,
             )
             .unwrap();
@@ -56,8 +56,8 @@ impl User {
         let mut insert_rel_user_msg = db
             .prepare(
                 r#"
-            INSERT INTO rel_user_msg(user_id, msg_id)
-            VALUES(?, ?)
+        INSERT INTO rel_user_msg(user_id, msg_id)
+        VALUES(?, ?)
             "#,
             )
             .unwrap();
@@ -70,9 +70,9 @@ impl User {
         let mut get_msgs = db
             .prepare(
                 r#"
-            SELECT rel.id, msg.msg FROM rel_user_msg rel
-            INNER JOIN sent_msgs msg ON msg.id = rel.msg_id
-            WHERE rel.user_id = ?
+        SELECT rel.id, msg.msg FROM rel_user_msg rel
+        INNER JOIN sent_msgs msg ON msg.id = rel.msg_id
+        WHERE rel.user_id = ?
             "#,
             )
             .unwrap();
@@ -81,8 +81,8 @@ impl User {
         let mut delete_rel = db
             .prepare(
                 r#"
-            DELETE FROM rel_user_msg
-            WHERE id = ?;
+        DELETE FROM rel_user_msg
+        WHERE id = ?;
             "#,
             )
             .unwrap();
@@ -113,9 +113,9 @@ impl Room {
         let mut insert_room = db
             .prepare(
                 r#"
-            INSERT OR IGNORE INTO rooms(name, private, pass, admin)
-            VALUES(?, ?, ?)
-            RETURNING (1)
+        INSERT OR IGNORE INTO rooms(name, private, pass, admin)
+        VALUES(?, ?, ?)
+        RETURNING (1)
             "#,
             )
             .unwrap();
@@ -130,8 +130,8 @@ impl Room {
         let mut select_room = db
             .prepare(
                 r#"
-            SELECT id, private, admin FROM rooms
-            WHERE name = ?
+        SELECT id, private, admin FROM rooms
+        WHERE name = ?
             "#,
             )
             .unwrap();
@@ -151,8 +151,8 @@ impl Room {
         let mut get_room_names = db
             .prepare(
                 r#"
-            SELECT name FROM rooms
-            WHERE private = FALSE
+        SELECT name FROM rooms
+        WHERE private = FALSE
             "#,
             )
             .unwrap();
@@ -170,9 +170,9 @@ impl Room {
         let mut get_user_names = db
             .prepare(
                 r#"
-            SELECT u.name FROM rel_room_user rel
-            INNER JOIN users u ON rel.user_id = u.id
-            WHERE rel.room_id = ?
+        SELECT u.name FROM rel_room_user rel
+        INNER JOIN users u ON rel.user_id = u.id
+        WHERE rel.room_id = ?
             "#,
             )
             .unwrap();
@@ -191,8 +191,8 @@ impl Room {
         let mut get_member = db
             .prepare(
                 r#"
-            SELECT (1) FROM rel_room_user
-            WHERE room_id = ? AND user_id = ?
+        SELECT (1) FROM rel_room_user
+        WHERE room_id = ? AND user_id = ?
             "#,
             )
             .unwrap();
@@ -209,8 +209,8 @@ impl Room {
         let mut get_banned = db
             .prepare(
                 r#"
-            SELECT (1) FROM rel_room_banned
-            WHERE room_id = ? AND user_id = ?
+        SELECT (1) FROM rel_room_banned
+        WHERE room_id = ? AND user_id = ?
             "#,
             )
             .unwrap();
@@ -223,8 +223,8 @@ impl Room {
         let mut compare_pass = db
             .prepare(
                 r#"
-            SELECT (1) FROM rooms
-            WHERE id = ? AND pass = ?
+        SELECT (1) FROM rooms
+        WHERE id = ? AND pass = ?
             "#,
             )
             .unwrap();
@@ -237,9 +237,9 @@ impl Room {
         let mut insert_message = db
             .prepare(
                 r#"
-            INSERT INTO sent_msgs(msg)
-            VALUES(?)
-            RETURNING id
+        INSERT INTO sent_msgs(msg)
+        VALUES(?)
+        RETURNING id
             "#,
             )
             .unwrap();
@@ -262,8 +262,8 @@ impl Room {
         let mut insert_rel_user_msg = db
             .prepare(
                 r#"
-            INSERT INTO rel_user_msg(user_id, msg_id)
-            VALUES(?, ?)
+        INSERT INTO rel_user_msg(user_id, msg_id)
+        VALUES(?, ?)
             "#,
             )
             .unwrap();
@@ -281,8 +281,8 @@ impl Room {
         let mut delete_cascade = db
             .prepare(
                 r#"
-            DELETE FROM rooms
-            WHERE id = ?;
+        DELETE FROM rooms
+        WHERE id = ?;
             "#,
             )
             .unwrap();
@@ -294,8 +294,8 @@ impl Room {
         let mut insert_rel = db
             .prepare(
                 r#"
-            INSERT OR IGNORE INTO rel_room_user(room_id, user_id)
-            VALUES(?, ?)
+        INSERT OR IGNORE INTO rel_room_user(room_id, user_id)
+        VALUES(?, ?)
             "#,
             )
             .unwrap();
@@ -307,8 +307,8 @@ impl Room {
         let mut delete_rel = db
             .prepare(
                 r#"
-            DELETE FROM rel_room_user
-            WHERE room_id = ? AND user_id = ?
+        DELETE FROM rel_room_user
+        WHERE room_id = ? AND user_id = ?
             "#,
             )
             .unwrap();
@@ -321,8 +321,8 @@ impl Room {
         let mut insert_rel = db
             .prepare(
                 r#"
-            INSERT OR IGNORE INTO rel_room_banned(room_id, user_id)
-            VALUES(?, ?)
+        INSERT OR IGNORE INTO rel_room_banned(room_id, user_id)
+        VALUES(?, ?)
             "#,
             )
             .unwrap();
