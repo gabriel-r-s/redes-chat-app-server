@@ -23,7 +23,6 @@ pub fn command_aes_key<'a>(line: &'a str) -> Option<&'a str> {
 }
 
 pub fn command<'a>(line: &'a str) -> Option<Command<'a>> {
-    println!("parsing {line}");
     let mut split = line.split_whitespace();
     match split.next() {
         Some("LISTAR_SALAS") => Some(Command::ListRooms),
