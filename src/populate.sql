@@ -21,10 +21,10 @@ INSERT INTO rel_room_user(user_id, room_id) VALUES(4, 1);
 INSERT INTO rel_room_user(user_id, room_id) VALUES(4, 3);
 
 -- some messages to send
-INSERT INTO sent_msgs(id, msg) VALUES(1, 'usuario 1 é otario');
-INSERT INTO sent_msgs(id, msg) VALUES(2, 'usuario 2 é otario');
-INSERT INTO sent_msgs(id, msg) VALUES(3, 'usuario 3 é otario');
-INSERT INTO sent_msgs(id, msg) VALUES(4, 'usuario 4 é otario');
+INSERT INTO messages(id, msg) VALUES(1, 'usuario 1 é otario');
+INSERT INTO messages(id, msg) VALUES(2, 'usuario 2 é otario');
+INSERT INTO messages(id, msg) VALUES(3, 'usuario 3 é otario');
+INSERT INTO messages(id, msg) VALUES(4, 'usuario 4 é otario');
 
 -- who to send
 INSERT INTO rel_user_msg(id, user_id, msg_id) VALUES( 1, 1, 2);
