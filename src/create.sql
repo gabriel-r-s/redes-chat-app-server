@@ -2,18 +2,21 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE users(
     id          INTEGER PRIMARY KEY CHECK(id != 0),
-    name        TEXT    NOT NULL UNIQUE,
-    aes_key     TEXT    NOT NULL
+    name        TEXT    NOT NULL
 );
 
+CREATE UNIQUE INDEX user_names ON users(name);
+
 CREATE TABLE rooms(
-    id      INTEGER PRIMARY KEY,
-    name    TEXT    NOT NULL UNIQUE CHECK(id != 0),
+    id      INTEGER PRIMARY KEY CHECK(id != 0),
+    name    TEXT    NOT NULL,
     private BOOL    NOT NULL,
     pass    TEXT    NOT NULL,
     admin   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     CHECK(LENGTH(pass)=32 OR (private=FALSE AND LENGTH(pass)=0))
 );
+
+CREATE UNIQUE INDEX room_names ON rooms(name);
 
 CREATE TABLE rel_room_user(
     room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,

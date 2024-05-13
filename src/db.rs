@@ -1,36 +1,56 @@
 use sqlite::{ConnectionThreadSafe as Db, State};
 
+const SQL_LOG_ENABLE: bool = true;
+
 macro_rules! sqlite {
+    ($db:expr, $sql:expr, $($arg:expr),* $(,)?) => {{
+        if SQL_LOG_ENABLE {
+            eprint!("query {{'");
+            let mut _split = $sql.split_whitespace();
+            if let Some(_s) = _split.next() {
+                eprint!("{}", _s);
+                for _s in _split {
+                    eprint!(" {}", _s);
+                }
+            }
+            $({
+                eprint!(", {:?}", $arg);
+            })*
+            eprintln!("}}");
+        }
+        sqlite_no_log!($db, $sql, $($arg),*)
+    }};
+}
+
+macro_rules! sqlite_no_log {
     ($db:expr, $sql:expr, $($arg:expr),* $(,)?) => {{
         let mut _query = $db.prepare($sql).unwrap();
         let mut _i = 1;
-        $( {
+        $({
             _query.bind((_i, $arg)).unwrap();
             _i += 1;
-        }
-        )*
+        })*
         _query
     }};
 }
 
+#[derive(Clone)]
 pub struct User {
     pub id: i64,
     pub name: String,
-    #[allow(dead_code)]
     pub aes_key: String,
 }
 
 impl User {
-    pub fn create(db: &Db, name: &str, aes_key: &str) -> Option<i64> {
+    pub fn create(db: &Db, name: &str) -> Option<i64> {
         let mut insert_user = sqlite!(
             db,
             "
-            INSERT INTO users(name, aes_key)
-            VALUES(?, ?)
+            INSERT INTO users(name)
+            VALUES(?)
             RETURNING id
             ",
             name,
-            aes_key,
         );
         if let State::Row = insert_user.next().unwrap() {
             Some(insert_user.read::<i64, _>("id").unwrap())
@@ -78,17 +98,17 @@ impl User {
         insert_rel_user_msg.next().unwrap();
     }
 
-    pub fn drain_msgs(db: &'static Db, user_id: i64) -> impl Iterator<Item = String> {
-        let mut get_msgs = sqlite!(
+    pub fn drain_msgs(db: &'static Db, user_id: i64) -> Vec<String> {
+        let mut get_msgs = sqlite_no_log!(
             db,
             "
-            SELECT rel_id, msg FROM view_user_msgs
+            SELECT id, msg FROM view_user_msgs
             WHERE user_id = ?
             ",
             user_id,
         );
 
-        let mut delete_rel = sqlite!(
+        let mut delete_rel = sqlite_no_log!(
             db,
             "
             DELETE FROM rel_user_msg
@@ -96,22 +116,21 @@ impl User {
             ",
         );
 
-        std::iter::from_fn(move || {
-            (get_msgs.next().unwrap() == State::Row).then(|| {
-                let rel_id = get_msgs.read::<i64, _>(0).unwrap();
-                let msg = get_msgs.read::<String, _>(1).unwrap();
-                delete_rel.reset().unwrap();
-                delete_rel.bind((1, rel_id)).unwrap();
-                delete_rel.next().unwrap();
-                msg
-            })
-        })
+        let mut msgs = Vec::new();
+        while let State::Row = get_msgs.next().unwrap() {
+            let rel_id = get_msgs.read::<i64, _>(0).unwrap();
+            let msg = get_msgs.read::<String, _>(1).unwrap();
+            delete_rel.reset().unwrap();
+            delete_rel.bind((1, rel_id)).unwrap();
+            delete_rel.next().unwrap();
+            msgs.push(msg);
+        }
+        msgs
     }
 }
 
 pub struct Room {
     pub id: i64,
-    pub private: bool,
     pub admin: i64,
 }
 
@@ -121,7 +140,7 @@ impl Room {
             db,
             "
             INSERT OR IGNORE INTO rooms(name, private, pass, admin)
-            VALUES(?, ?, ?)
+            VALUES(?, ?, ?, ?)
             RETURNING (1)
             ",
             name,
@@ -136,17 +155,15 @@ impl Room {
         let mut select_room = sqlite!(
             db,
             "
-            SELECT id, private, admin FROM rooms
+            SELECT id, admin FROM rooms
             WHERE name = ?
             ",
             name,
         );
         if let State::Row = select_room.next().unwrap() {
             let id = select_room.read::<i64, _>("id").unwrap();
-            let private = select_room.read::<i64, _>("private").unwrap();
-            let private = private != 0;
             let admin = select_room.read::<i64, _>("admin").unwrap();
-            Some(Room { id, private, admin })
+            Some(Room { id, admin })
         } else {
             None
         }
@@ -162,8 +179,60 @@ impl Room {
         );
 
         std::iter::from_fn(move || {
-            (get_room_names.next().unwrap() == State::Row)
-                .then(|| get_room_names.read::<String, _>("name").unwrap())
+            if get_room_names.next().unwrap() == State::Row {
+                Some(get_room_names.read::<String, _>("name").unwrap())
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn get_all_from_member(
+        db: &'static Db,
+        user_id: i64,
+    ) -> impl Iterator<Item = (Self, String)> {
+        let mut get_ids = sqlite!(
+            db,
+            "
+            SELECT room.id, room.admin, room.name FROM rel_room_user rel
+            INNER JOIN rooms room ON room.id = rel.room_id AND room.admin != ?
+            WHERE rel.user_id = ?
+            ",
+            user_id,
+            user_id,
+        );
+        std::iter::from_fn(move || {
+            if let Ok(State::Row) = get_ids.next() {
+                let id = get_ids.read::<i64, _>("id").unwrap();
+                let admin = get_ids.read::<i64, _>("admin").unwrap();
+                let name = get_ids.read::<String, _>("name").unwrap();
+                Some((Room { id, admin }, name))
+            } else {
+                None
+            }
+        })
+    }
+    pub fn get_all_from_admin(
+        db: &'static Db,
+        user_id: i64,
+    ) -> impl Iterator<Item = (Room, String)> {
+        let mut get_ids = sqlite!(
+            db,
+            "
+            SELECT id, admin, name FROM rooms
+            WHERE admin = ?
+            ",
+            user_id
+        );
+        std::iter::from_fn(move || {
+            if let Ok(State::Row) = get_ids.next() {
+                let id = get_ids.read::<i64, _>("id").unwrap();
+                let admin = get_ids.read::<i64, _>("admin").unwrap();
+                let name = get_ids.read::<String, _>("name").unwrap();
+                Some((Room { id, admin }, name))
+            } else {
+                None
+            }
         })
     }
 
@@ -172,14 +241,14 @@ impl Room {
             db,
             "
             SELECT name FROM view_room_user_names
-                WHERE room_id = ?
+            WHERE room_id = ?
             ",
             self.id,
         );
 
         std::iter::from_fn(move || {
             if let Ok(State::Row) = get_user_names.next() {
-                Some(get_user_names.read::<String, _>(0).unwrap())
+                Some(get_user_names.read::<String, _>("name").unwrap())
             } else {
                 None
             }
@@ -301,6 +370,7 @@ impl Room {
             "
             DELETE FROM rel_room_user
             WHERE room_id = ? AND user_id = ?
+            RETURNING (1)
             ",
             self.id,
             user_id,
@@ -314,6 +384,7 @@ impl Room {
             "
             INSERT OR IGNORE INTO rel_room_banned(room_id, user_id)
             VALUES(?, ?)
+            RETURNING (1)
             ",
             self.id,
             user_id,

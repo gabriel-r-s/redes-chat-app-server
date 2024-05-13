@@ -1,3 +1,4 @@
+#![feature(str_split_whitespace_remainder)]
 use async_std::net::{SocketAddr, TcpListener};
 use async_std::prelude::*;
 use async_std::task;
@@ -16,20 +17,26 @@ enum IoError {
     Closed,
 }
 
-async fn admin(db: &Db) {
+async fn admin(db: &Db) -> Option<()> {
     let mut line = String::new();
     loop {
+        print!("SQL> ");
+        async_std::io::stdout().flush().await.unwrap();
         line.clear();
-        let _ = async_std::io::stdin().read_line(&mut line).await;
+        async_std::io::stdin().read_line(&mut line).await.ok()?;
         let query = db.iterate(&line, |pairs| {
-            for &(name, value) in pairs.iter() {
-                print!("{}={} | ", name, value.unwrap());
+            let mut pairs = pairs.iter();
+            if let Some(&(name, value)) = pairs.next() {
+                print!("| {}={:?} | ", name, value.unwrap());
+            }
+            for &(name, value) in pairs {
+                print!("{}={:?} | ", name, value.unwrap());
             }
             println!();
             true
         });
         if query.is_err() {
-            println!("SQL err");
+            println!("SQL error");
             continue;
         }
     }
@@ -52,7 +59,6 @@ async fn auth_client(
     // registro
     buf.clear();
     stream.block_read_plain_line(buf).await?;
-    println!("1");
     let name = parse::command_register(&buf)
         .ok_or(IoError::Failed)?
         .to_string();
@@ -61,7 +67,6 @@ async fn auth_client(
         stream.write_plain_msg("ERRO usuário já existe\n").await?;
         return Err(IoError::Failed);
     }
-    println!("2");
     stream.write_plain_msg("REGISTRO_OK\n").await?;
 
     // autenticação RSA
@@ -69,16 +74,14 @@ async fn auth_client(
     stream.block_read_plain_line(buf).await?;
     if parse::command_auth(&buf) != Some(name.as_str()) {
         stream
-            .write_plain_msg("ERRO nome de usuário difere")
+            .write_plain_msg("ERRO nome de usuário difere\n")
             .await?;
         return Err(IoError::Failed);
     }
-    println!("3");
-    let rsa_pub = rsa::RsaPublicKey::from(rsa_key);
+    // let rsa_pub = rsa::RsaPublicKey::from(rsa_key);
     msg.clear();
-    writeln!(msg, "CHAVE_PUBLICA {:?}", rsa_pub).map_err(|_| IoError::Closed)?;
+    writeln!(msg, "CHAVE_PUBLICA 123").map_err(|_| IoError::Closed)?;
     stream.write_plain_msg(&msg).await?;
-    println!("4");
 
     // transmissão chave simétrica
     buf.clear();
@@ -92,9 +95,8 @@ async fn auth_client(
             .await?;
         return Err(IoError::Failed);
     };
-    println!("5");
 
-    let Some(id) = db::User::create(db, &name, &aes_key) else {
+    let Some(id) = db::User::create(db, &name) else {
         stream
             .write_plain_msg("ERRO não foi possível criar usuário")
             .await?;
@@ -133,25 +135,23 @@ async fn handle_client(db: &'static Db, mut stream: socket::Stream, rsa_key: &Rs
             return;
         }
     };
+
     buf.clear();
     'run: while !closed {
-        // for new_msg in db::User::drain_msgs(db, current_user.id) {
-        //     closed |= stream
-        //         .get_mut()
-        //         .write_all(new_msg.as_bytes())
-        //         .await
-        //         .is_err();
-        //     if closed {
-        //         break 'run;
-        //     }
-        // }
+        for new_msg in db::User::drain_msgs(db, current_user.id) {
+            closed |= stream
+                .write_msg(&new_msg, &current_user.aes_key)
+                .await
+                .is_err();
+            if closed {
+                break 'run;
+            }
+        }
         match stream.read_line(&mut buf, &current_user.aes_key).await {
             Ok(0) => continue,
             Ok(1..) => { /* ok */ }
             Err(_) => break 'run,
         }
-
-        // TODO AES encrypt/decrypt
 
         match parse::command(&buf) {
             Some(Command::ListRooms) => {
@@ -187,7 +187,7 @@ async fn handle_client(db: &'static Db, mut stream: socket::Stream, rsa_key: &Rs
                 }
                 room.kick(db, current_user.id);
                 msg.clear();
-                let _ = write!(&mut msg, "SAIU {}", current_user.name);
+                let _ = writeln!(&mut msg, "SAIU {}", current_user.name);
                 room.broadcast(db, &msg, current_user.id, 0);
                 closed |= stream
                     .write_msg("SAIR_SALA_OK\n", &current_user.aes_key)
@@ -210,7 +210,7 @@ async fn handle_client(db: &'static Db, mut stream: socket::Stream, rsa_key: &Rs
                     continue;
                 }
                 msg.clear();
-                let _ = write!(&mut msg, "SALA_FECHADA {}", room_name);
+                let _ = writeln!(&mut msg, "SALA_FECHADA {}", room_name);
                 room.broadcast(db, &msg, current_user.id, 0);
                 room.delete_cascade(db);
                 closed |= stream
@@ -230,8 +230,6 @@ async fn handle_client(db: &'static Db, mut stream: socket::Stream, rsa_key: &Rs
                         .is_err();
                     continue;
                 }
-                // TODO decode base64
-                // NOTE maybe check length of pass hash SHA-256 = 32B
                 if private && pass.is_empty() {
                     closed |= stream
                         .write_msg(
@@ -250,7 +248,7 @@ async fn handle_client(db: &'static Db, mut stream: socket::Stream, rsa_key: &Rs
                     continue;
                 }
                 closed |= stream
-                    .write_msg("CRIAR_SALA_OK", &current_user.aes_key)
+                    .write_msg("CRIAR_SALA_OK\n", &current_user.aes_key)
                     .await
                     .is_err();
             }
@@ -276,7 +274,6 @@ async fn handle_client(db: &'static Db, mut stream: socket::Stream, rsa_key: &Rs
                         .is_err();
                     continue;
                 }
-                // TODO decode base64
                 if !room.check_pass(db, pass) {
                     closed |= stream
                         .write_msg("ERRO senha incorreta\n", &current_user.aes_key)
@@ -335,7 +332,7 @@ async fn handle_client(db: &'static Db, mut stream: socket::Stream, rsa_key: &Rs
                         .is_err();
                     continue;
                 };
-                if !room.is_admin(current_user.id) {
+                if room.admin != current_user.id {
                     closed |= stream
                         .write_msg("ERRO não é admin\n", &current_user.aes_key)
                         .await
@@ -367,7 +364,7 @@ async fn handle_client(db: &'static Db, mut stream: socket::Stream, rsa_key: &Rs
                     db::User::send_to(db, banned_id, &msg);
                 }
                 closed |= stream
-                    .write_msg("BANIMENTO_OK", &current_user.aes_key)
+                    .write_msg("BANIMENTO_OK\n", &current_user.aes_key)
                     .await
                     .is_err();
             }
@@ -379,6 +376,16 @@ async fn handle_client(db: &'static Db, mut stream: socket::Stream, rsa_key: &Rs
             }
         }
     }
+    for (joined_room, name) in db::Room::get_all_from_member(db, current_user.id) {
+        msg.clear();
+        let _ = writeln!(&mut msg, "SAIU {} {}", name, current_user.name);
+        joined_room.broadcast(db, &msg, current_user.id, 0);
+    }
+    for (owned_room, name) in db::Room::get_all_from_admin(db, current_user.id) {
+        msg.clear();
+        let _ = writeln!(&mut msg, "SALA_FECHADA {}", name);
+        owned_room.broadcast(db, &msg, current_user.id, 0);
+    }
     current_user.delete_cascade(db);
 }
 
@@ -389,6 +396,7 @@ async fn main() {
     ));
     db.execute(include_str!("./create.sql")).unwrap();
     db.execute(include_str!("./populate.sql")).unwrap();
+    task::spawn(admin(db));
 
     let mut rng = rand::thread_rng();
     let rsa_key = Box::leak(Box::new(rsa::RsaPrivateKey::new(&mut rng, 1024).unwrap()));
@@ -401,8 +409,6 @@ async fn main() {
     let listener = TcpListener::bind(addr)
         .await
         .unwrap_or_else(|_| panic!("Cannot listen on addr {}", addr));
-
-    task::spawn(admin(db));
 
     while let Some(stream) = listener.incoming().next().await {
         let Ok(stream) = stream else { continue };

@@ -1,8 +1,8 @@
 -- users
-INSERT INTO users(id, name, aes_key) VALUES(1, 'user1', '123');
-INSERT INTO users(id, name, aes_key) VALUES(2, 'user2', '123');
-INSERT INTO users(id, name, aes_key) VALUES(3, 'user3', '123');
-INSERT INTO users(id, name, aes_key) VALUES(4, 'user4', '123');
+INSERT INTO users(id, name) VALUES(1, 'user1');
+INSERT INTO users(id, name) VALUES(2, 'user2');
+INSERT INTO users(id, name) VALUES(3, 'user3');
+INSERT INTO users(id, name) VALUES(4, 'user4');
 
 -- rooms + admins
 INSERT INTO rooms(id, name, private, pass, admin) VALUES(1, 'room1', FALSE, '', 1);

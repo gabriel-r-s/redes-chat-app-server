@@ -55,7 +55,7 @@ pub fn command<'a>(line: &'a str) -> Option<Command<'a>> {
         }
         Some("ENVIAR_MENSAGEM") => {
             let room_name = split.next()?;
-            let sent_msg = split.next().unwrap_or("");
+            let sent_msg = split.remainder().unwrap_or("").trim();
             Some(Command::SendMsg {
                 room_name,
                 sent_msg,
