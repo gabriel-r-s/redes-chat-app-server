@@ -5,6 +5,7 @@ use async_std::task;
 use rsa::RsaPrivateKey;
 use sqlite::ConnectionThreadSafe as Db;
 use std::fmt::Write as _;
+use std::str::FromStr as _;
 
 mod parse;
 use parse::Command;
@@ -121,12 +122,7 @@ async fn handle_client(db: &'static Db, mut stream: socket::Stream, rsa_key: &Rs
             Ok(user) => {
                 break user;
             }
-            Err(IoError::Failed) => {
-                closed |= stream
-                    .write_plain_msg("ERRO tente novamente\n")
-                    .await
-                    .is_err();
-            }
+            Err(IoError::Failed) => {}
             Err(IoError::Closed) => {
                 closed = true;
             }
@@ -396,16 +392,17 @@ async fn main() {
     ));
     db.execute(include_str!("./create.sql")).unwrap();
     db.execute(include_str!("./populate.sql")).unwrap();
-    task::spawn(admin(db));
 
     let mut rng = rand::thread_rng();
     let rsa_key = Box::leak(Box::new(rsa::RsaPrivateKey::new(&mut rng, 1024).unwrap()));
 
-    let port = std::env::args()
+    let addr = std::env::args()
         .nth(1)
-        .and_then(|port| port.parse::<u16>().ok())
-        .unwrap_or(8888);
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        .and_then(|addr| SocketAddr::from_str(&addr).ok())
+        .unwrap_or(SocketAddr::from(([127, 0, 0, 1], 8888)));
+    println!("listening on {}", addr);
+
+    task::spawn(admin(db));
     let listener = TcpListener::bind(addr)
         .await
         .unwrap_or_else(|_| panic!("Cannot listen on addr {}", addr));
