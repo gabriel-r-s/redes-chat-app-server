@@ -38,7 +38,6 @@ macro_rules! sqlite_no_log {
 pub struct User {
     pub id: i64,
     pub name: String,
-    pub aes_key: String,
 }
 
 impl User {

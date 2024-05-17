@@ -2,10 +2,13 @@
 use async_std::net::{SocketAddr, TcpListener};
 use async_std::prelude::*;
 use async_std::task;
-use rsa::RsaPrivateKey;
+use openssl::{base64, rsa};
 use sqlite::ConnectionThreadSafe as Db;
 use std::fmt::Write as _;
 use std::str::FromStr as _;
+
+type RsaKey = rsa::Rsa<openssl::pkey::Private>;
+type AesKey = [u8; 16];
 
 mod parse;
 use parse::Command;
@@ -13,9 +16,12 @@ mod db;
 mod socket;
 use socket::Stream;
 
+#[derive(Debug)]
 enum IoError {
     Failed,
     Closed,
+    BadCrypto,
+    Timeout,
 }
 
 async fn admin(db: &Db) -> Option<()> {
@@ -46,7 +52,7 @@ async fn admin(db: &Db) -> Option<()> {
 async fn auth_client(
     db: &Db,
     stream: &mut Stream,
-    rsa_key: &RsaPrivateKey,
+    rsa_key: &RsaKey,
     buf: &mut String,
     msg: &mut String,
 ) -> Result<db::User, IoError> {
@@ -58,7 +64,6 @@ async fn auth_client(
      */
 
     // registro
-    buf.clear();
     stream.block_read_plain_line(buf).await?;
     let name = parse::command_register(&buf)
         .ok_or(IoError::Failed)?
@@ -71,7 +76,6 @@ async fn auth_client(
     stream.write_plain_msg("REGISTRO_OK\n").await?;
 
     // autenticação RSA
-    buf.clear();
     stream.block_read_plain_line(buf).await?;
     if parse::command_auth(&buf) != Some(name.as_str()) {
         stream
@@ -79,74 +83,69 @@ async fn auth_client(
             .await?;
         return Err(IoError::Failed);
     }
-    // let rsa_pub = rsa::RsaPublicKey::from(rsa_key);
     msg.clear();
     writeln!(msg, "CHAVE_PUBLICA 123").map_err(|_| IoError::Closed)?;
     stream.write_plain_msg(&msg).await?;
 
     // transmissão chave simétrica
-    buf.clear();
     stream.block_read_plain_line(buf).await?;
-    let aes_key = if let Some(_aes_key) = parse::command_aes_key(&buf) {
-        // rsa_decode(rsa_pri, base64_decode(aes_key))
-        "aes_key_goes_here".to_string()
+    if let Some(aes_key) = parse::command_aes_key(&buf) {
+        if let Err(err) = stream.set_aes_key(aes_key) {
+            return Err(err);
+        }
     } else {
         stream
-            .write_plain_msg("ERRO transmissao de chave simetrica")
+            .write_plain_msg("ERRO transmissao de chave simetrica\n")
             .await?;
         return Err(IoError::Failed);
     };
 
     let Some(id) = db::User::create(db, &name) else {
         stream
-            .write_plain_msg("ERRO não foi possível criar usuário")
+            .write_plain_msg("ERRO não foi possível criar usuário\n")
             .await?;
         return Err(IoError::Failed);
     };
-    Ok(db::User { id, name, aes_key })
+    Ok(db::User { id, name })
 }
 
-async fn handle_client(db: &'static Db, mut stream: socket::Stream, rsa_key: &RsaPrivateKey) {
+async fn handle_client(db: &'static Db, mut stream: socket::Stream, rsa_key: RsaKey) {
     let mut buf = String::new();
     let mut msg = String::new();
 
-    //  dev only!!!!
-    // let user = db::User {
-    //     id: 1,
-    //     name: "admin12_user123".to_string(),
-    //     aes_key: "123".to_string(),
-    // };
-    let mut closed = false;
     let current_user = loop {
-        match auth_client(&db, &mut stream, rsa_key, &mut buf, &mut msg).await {
+        match auth_client(&db, &mut stream, &rsa_key, &mut buf, &mut msg).await {
             Ok(user) => {
                 break user;
             }
-            Err(IoError::Failed) => {}
-            Err(IoError::Closed) => {
-                closed = true;
+            Err(IoError::Failed) => continue,
+            Err(IoError::Timeout) => unreachable!(),
+            Err(IoError::Closed | IoError::BadCrypto) => {
+                println!("Failed auth");
+                return;
             }
-        }
-        if closed {
-            return;
         }
     };
 
-    buf.clear();
+    let mut closed = false;
     'run: while !closed {
         for new_msg in db::User::drain_msgs(db, current_user.id) {
-            closed |= stream
-                .write_msg(&new_msg, &current_user.aes_key)
-                .await
-                .is_err();
+            closed |= stream.write_msg(&new_msg).await.is_err();
             if closed {
                 break 'run;
             }
         }
-        match stream.read_line(&mut buf, &current_user.aes_key).await {
-            Ok(0) => continue,
-            Ok(1..) => { /* ok */ }
-            Err(_) => break 'run,
+        match stream.read_line(&mut buf).await {
+            Ok(_) => { /* ok :) */ }
+            Err(IoError::Timeout) => continue,
+            Err(IoError::Failed) => unreachable!(),
+            Err(IoError::BadCrypto) => {
+                eprintln!("BAD CRYPTO FOR USER {} - {}", current_user.name, buf);
+                break 'run;
+            }
+            Err(IoError::Closed) => {
+                break 'run;
+            }
         }
 
         match parse::command(&buf) {
@@ -157,62 +156,68 @@ async fn handle_client(db: &'static Db, mut stream: socket::Stream, rsa_key: &Rs
                     let _ = write!(&mut msg, " {}", room_name);
                 }
                 let _ = writeln!(&mut msg);
-                closed |= stream.write_msg(&msg, &current_user.aes_key).await.is_err();
+                closed |= stream.write_msg(&msg).await.is_err();
+                if closed {
+                    break 'run;
+                }
             }
             Some(Command::LeaveRoom { room_name }) => {
                 let Some(room) = db::Room::get(db, room_name) else {
-                    closed |= stream
-                        .write_msg("ERRO sala não encontrada\n", &current_user.aes_key)
-                        .await
-                        .is_err();
+                    closed |= stream.write_msg("ERRO sala não encontrada").await.is_err();
+                    if closed {
+                        break 'run;
+                    }
                     continue;
                 };
                 if !room.is_member(db, current_user.id) {
-                    closed |= stream
-                        .write_msg("ERRO não é membro da sala\n", &current_user.aes_key)
-                        .await
-                        .is_err();
+                    closed |= stream.write_msg("ERRO não é membro da sala").await.is_err();
+                    if closed {
+                        break 'run;
+                    }
                     continue;
                 }
                 if room.is_admin(current_user.id) {
                     closed |= stream
-                        .write_msg("ERRO admin deve fechar a sala\n", &current_user.aes_key)
+                        .write_msg("ERRO admin deve fechar a sala")
                         .await
                         .is_err();
+                    if closed {
+                        break 'run;
+                    }
                     continue;
                 }
                 room.kick(db, current_user.id);
                 msg.clear();
                 let _ = writeln!(&mut msg, "SAIU {}", current_user.name);
                 room.broadcast(db, &msg, current_user.id, 0);
-                closed |= stream
-                    .write_msg("SAIR_SALA_OK\n", &current_user.aes_key)
-                    .await
-                    .is_err();
+                closed |= stream.write_msg("SAIR_SALA_OK").await.is_err();
+                if closed {
+                    break 'run;
+                }
             }
             Some(Command::CloseRoom { room_name }) => {
                 let Some(room) = db::Room::get(db, room_name) else {
-                    closed |= stream
-                        .write_msg("ERRO sala não encontrada\n", &current_user.aes_key)
-                        .await
-                        .is_err();
+                    closed |= stream.write_msg("ERRO sala não encontrada").await.is_err();
+                    if closed {
+                        break 'run;
+                    }
                     continue;
                 };
                 if !room.is_admin(current_user.id) {
-                    closed |= stream
-                        .write_msg("ERRO não é admin\n", &current_user.aes_key)
-                        .await
-                        .is_err();
+                    closed |= stream.write_msg("ERRO não é admin").await.is_err();
+                    if closed {
+                        break 'run;
+                    }
                     continue;
                 }
                 msg.clear();
                 let _ = writeln!(&mut msg, "SALA_FECHADA {}", room_name);
                 room.broadcast(db, &msg, current_user.id, 0);
                 room.delete_cascade(db);
-                closed |= stream
-                    .write_msg("FECHAR_SALA_OK\n", &current_user.aes_key)
-                    .await
-                    .is_err();
+                closed |= stream.write_msg("FECHAR_SALA_OK").await.is_err();
+                if closed {
+                    break 'run;
+                }
             }
             Some(Command::CreateRoom {
                 room_name,
@@ -220,61 +225,40 @@ async fn handle_client(db: &'static Db, mut stream: socket::Stream, rsa_key: &Rs
                 pass,
             }) => {
                 if db::Room::get(db, room_name).is_some() {
-                    closed |= stream
-                        .write_msg("ERRO sala já existe\n", &current_user.aes_key)
-                        .await
-                        .is_err();
+                    closed |= stream.write_msg("ERRO sala já existe").await.is_err();
                     continue;
                 }
                 if private && pass.is_empty() {
                     closed |= stream
-                        .write_msg(
-                            "ERRO sala privada deve ter uma senha\n",
-                            &current_user.aes_key,
-                        )
+                        .write_msg("ERRO sala privada deve ter uma senha")
                         .await
                         .is_err();
                     continue;
                 }
                 if !db::Room::create(db, room_name, private, pass, current_user.id) {
-                    closed |= stream
-                        .write_msg("ERRO sala ja existe\n", &current_user.aes_key)
-                        .await
-                        .is_err();
+                    closed |= stream.write_msg("ERRO sala ja existe? wtf").await.is_err();
                     continue;
                 }
-                closed |= stream
-                    .write_msg("CRIAR_SALA_OK\n", &current_user.aes_key)
-                    .await
-                    .is_err();
+                closed |= stream.write_msg("CRIAR_SALA_OK").await.is_err();
+                if closed {
+                    break 'run;
+                }
             }
             Some(Command::JoinRoom { room_name, pass }) => {
                 let Some(room) = db::Room::get(db, room_name) else {
-                    closed |= stream
-                        .write_msg("ERRO sala não encontrada\n", &current_user.aes_key)
-                        .await
-                        .is_err();
+                    closed |= stream.write_msg("ERRO sala não encontrada").await.is_err();
                     continue;
                 };
                 if room.is_banned(db, current_user.id) {
-                    closed |= stream
-                        .write_msg("ERRO banido da sala\n", &current_user.aes_key)
-                        .await
-                        .is_err();
+                    closed |= stream.write_msg("ERRO banido da sala").await.is_err();
                     continue;
                 }
                 if room.is_member(db, current_user.id) {
-                    closed |= stream
-                        .write_msg("ERRO já está na sala\n", &current_user.aes_key)
-                        .await
-                        .is_err();
+                    closed |= stream.write_msg("ERRO já está na sala").await.is_err();
                     continue;
                 }
                 if !room.check_pass(db, pass) {
-                    closed |= stream
-                        .write_msg("ERRO senha incorreta\n", &current_user.aes_key)
-                        .await
-                        .is_err();
+                    closed |= stream.write_msg("ERRO senha incorreta").await.is_err();
                     continue;
                 }
                 room.add_user(db, current_user.id);
@@ -289,24 +273,18 @@ async fn handle_client(db: &'static Db, mut stream: socket::Stream, rsa_key: &Rs
                     let _ = write!(&mut msg, " {}", user_name);
                 }
                 let _ = writeln!(&mut msg);
-                closed |= stream.write_msg(&msg, &current_user.aes_key).await.is_err();
+                closed |= stream.write_msg(&msg).await.is_err();
             }
             Some(Command::SendMsg {
                 room_name,
                 sent_msg,
             }) => {
                 let Some(room) = db::Room::get(db, room_name) else {
-                    closed |= stream
-                        .write_msg("ERRO sala não encontrada\n", &current_user.aes_key)
-                        .await
-                        .is_err();
+                    closed |= stream.write_msg("ERRO sala não encontrada").await.is_err();
                     continue;
                 };
                 if !room.is_member(db, current_user.id) {
-                    closed |= stream
-                        .write_msg("ERRO sala não encontrada\n", &current_user.aes_key)
-                        .await
-                        .is_err();
+                    closed |= stream.write_msg("ERRO sala não encontrada").await.is_err();
                     continue;
                 }
                 msg.clear();
@@ -322,29 +300,23 @@ async fn handle_client(db: &'static Db, mut stream: socket::Stream, rsa_key: &Rs
                 banned_name,
             }) => {
                 let Some(room) = db::Room::get(db, room_name) else {
-                    closed |= stream
-                        .write_msg("ERRO sala não encontrada\n", &current_user.aes_key)
-                        .await
-                        .is_err();
+                    closed |= stream.write_msg("ERRO sala não encontrada").await.is_err();
                     continue;
                 };
                 if room.admin != current_user.id {
-                    closed |= stream
-                        .write_msg("ERRO não é admin\n", &current_user.aes_key)
-                        .await
-                        .is_err();
+                    closed |= stream.write_msg("ERRO não é admin").await.is_err();
                     continue;
                 }
                 let Some(banned_id) = db::User::get_id(db, banned_name) else {
                     closed |= stream
-                        .write_msg("ERRO usuário não encontrado\n", &current_user.aes_key)
+                        .write_msg("ERRO usuário não encontrado")
                         .await
                         .is_err();
                     continue;
                 };
                 if banned_id == current_user.id {
                     closed |= stream
-                        .write_msg("ERRO não pode banir a si mesmo\n", &current_user.aes_key)
+                        .write_msg("ERRO não pode banir a si mesmo")
                         .await
                         .is_err();
                     continue;
@@ -359,16 +331,16 @@ async fn handle_client(db: &'static Db, mut stream: socket::Stream, rsa_key: &Rs
                     let _ = writeln!(&mut msg, "BANIDO_DA_SALA {}", room_name);
                     db::User::send_to(db, banned_id, &msg);
                 }
-                closed |= stream
-                    .write_msg("BANIMENTO_OK\n", &current_user.aes_key)
-                    .await
-                    .is_err();
+                closed |= stream.write_msg("BANIMENTO_OK").await.is_err();
             }
             None => {
                 closed |= stream
-                    .write_msg("ERRO comando nao reconhecido\n", &current_user.aes_key)
+                    .write_msg("ERRO comando nao reconhecido")
                     .await
                     .is_err();
+                if closed {
+                    break 'run;
+                }
             }
         }
     }
@@ -393,8 +365,7 @@ async fn main() {
     db.execute(include_str!("./create.sql")).unwrap();
     db.execute(include_str!("./populate.sql")).unwrap();
 
-    let mut rng = rand::thread_rng();
-    let rsa_key = Box::leak(Box::new(rsa::RsaPrivateKey::new(&mut rng, 1024).unwrap()));
+    let rsa_key = rsa::Rsa::generate(1024).unwrap();
 
     let addr = std::env::args()
         .nth(1)
@@ -411,7 +382,6 @@ async fn main() {
         let Ok(stream) = stream else { continue };
         let stream = Stream::new(stream);
         let db = &*db;
-        let rsa_key = &*rsa_key;
-        task::spawn(handle_client(db, stream, rsa_key));
+        task::spawn(handle_client(db, stream, rsa_key.clone()));
     }
 }

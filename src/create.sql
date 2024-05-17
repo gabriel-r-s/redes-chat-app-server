@@ -12,8 +12,7 @@ CREATE TABLE rooms(
     name    TEXT    NOT NULL,
     private BOOL    NOT NULL,
     pass    TEXT    NOT NULL,
-    admin   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    CHECK(LENGTH(pass)=32 OR (private=FALSE AND LENGTH(pass)=0))
+    admin   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE
 );
 
 CREATE UNIQUE INDEX room_names ON rooms(name);
