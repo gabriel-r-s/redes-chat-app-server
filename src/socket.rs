@@ -15,25 +15,28 @@ pub struct Stream {
     aes_key: Option<AesKey>,
 }
 
+impl Drop for Stream {
+    fn drop(&mut self) {
+        eprintln!(
+            "(SERVER)\tClosed connection {:?}",
+            self.stream.get_ref().peer_addr().unwrap()
+        );
+    }
+}
+
 impl Stream {
     pub fn new(stream: TcpStream) -> Self {
+        eprintln!("(SERVER)\tNew connection {:?}", stream.peer_addr().unwrap());
         let stream = BufReader::new(stream);
         Self {
             stream,
-            cipher: symm::Cipher::aes_128_cbc(),
+            cipher: symm::Cipher::aes_256_ecb(),
             aes_key: None,
         }
     }
 
-    pub fn set_aes_key(&mut self, aes_key: &str) -> Result<(), IoError> {
-        let Ok(aes_key) = base64::decode_block(aes_key) else {
-            return Err(IoError::BadCrypto);
-        };
-        let Ok(aes_key) = TryInto::<AesKey>::try_into(aes_key.as_slice()) else {
-            return Err(IoError::BadCrypto);
-        };
+    pub fn set_aes_key(&mut self, aes_key: AesKey) {
         self.aes_key = Some(aes_key);
-        Ok(())
     }
 
     pub async fn block_read_plain_line<'a>(
@@ -56,7 +59,10 @@ impl Stream {
                 return Err(IoError::Timeout);
             }
             Err(_) => return Err(IoError::Closed),
-            Ok(_) => return Ok(()),
+            Ok(_) => {
+                eprintln!("(MSG)\t{buf:?}");
+                return Ok(());
+            }
         }
 
         //if let Ok(Err(_)) = read {
@@ -70,19 +76,17 @@ impl Stream {
 
     pub async fn read_line(&mut self, buf: &mut String) -> Result<(), IoError> {
         self.read_plain_line(buf).await?;
-        eprintln!("enc {buf:?}");
+        // eprintln!("enc {buf:?}");
         let Ok(dec) = base64::decode_block(buf.trim()) else {
             return Err(IoError::BadCrypto);
         };
-        // eprintln!("b64 {dec:?}");
         let Ok(dec) = symm::decrypt(self.cipher, &self.aes_key.unwrap(), None, &dec) else {
             return Err(IoError::BadCrypto);
         };
-        // eprintln!("aes {dec:?}");
         let Ok(dec) = std::str::from_utf8(&dec) else {
             return Err(IoError::BadCrypto);
         };
-        eprintln!("dec {dec:?}");
+        eprintln!("(MSG)\t{dec:?}");
         buf.clear();
         let _ = writeln!(buf, "{}", dec);
         Ok(())

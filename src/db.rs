@@ -5,7 +5,7 @@ const SQL_LOG_ENABLE: bool = true;
 macro_rules! sqlite {
     ($db:expr, $sql:expr, $($arg:expr),* $(,)?) => {{
         if SQL_LOG_ENABLE {
-            eprint!("query {{'");
+            eprint!("(QUERY)\t");
             let mut _split = $sql.split_whitespace();
             if let Some(_s) = _split.next() {
                 eprint!("{}", _s);
@@ -16,7 +16,7 @@ macro_rules! sqlite {
             $({
                 eprint!(", {:?}", $arg);
             })*
-            eprintln!("}}");
+            eprintln!();
         }
         sqlite_no_log!($db, $sql, $($arg),*)
     }};

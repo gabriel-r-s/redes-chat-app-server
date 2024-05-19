@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use std::str::FromStr as _;
 
 type RsaKey = rsa::Rsa<openssl::pkey::Private>;
-type AesKey = [u8; 16];
+type AesKey = [u8; 32];
 
 mod parse;
 use parse::Command;
@@ -53,6 +53,7 @@ async fn auth_client(
     db: &Db,
     stream: &mut Stream,
     rsa_key: &RsaKey,
+    pub_key: &'static str,
     buf: &mut String,
     msg: &mut String,
 ) -> Result<db::User, IoError> {
@@ -77,6 +78,7 @@ async fn auth_client(
 
     // autenticação RSA
     stream.block_read_plain_line(buf).await?;
+    // println!("recebeu {buf:?}");
     if parse::command_auth(&buf) != Some(name.as_str()) {
         stream
             .write_plain_msg("ERRO nome de usuário difere\n")
@@ -84,15 +86,37 @@ async fn auth_client(
         return Err(IoError::Failed);
     }
     msg.clear();
-    writeln!(msg, "CHAVE_PUBLICA 123").map_err(|_| IoError::Closed)?;
+    writeln!(msg, "CHAVE_PUBLICA {}", pub_key).map_err(|_| IoError::Closed)?;
     stream.write_plain_msg(&msg).await?;
+    // println!("enviou {msg:?}");
 
     // transmissão chave simétrica
     stream.block_read_plain_line(buf).await?;
+    // println!("recebeu {buf:?}");
     if let Some(aes_key) = parse::command_aes_key(&buf) {
-        if let Err(err) = stream.set_aes_key(aes_key) {
-            return Err(err);
+        let Ok(dec_aes_key0) = base64::decode_block(aes_key) else {
+            // println!("decodificar base64 AES");
+            return Err(IoError::BadCrypto);
+        };
+        let mut dec_aes_key = vec![0; rsa_key.size() as usize];
+        let err = rsa_key
+            .private_decrypt(&dec_aes_key0, &mut dec_aes_key, rsa::Padding::PKCS1)
+            .is_err();
+        if err {
+            // println!("decodificar RSA AES");
+            return Err(IoError::BadCrypto);
         }
+        let Some(dec_aes_key) = dec_aes_key.split(|&c| c == 0).next() else {
+            // println!("n deve ser aqui, split");
+            return Err(IoError::BadCrypto);
+        };
+        // println!("aes key: {:?}", dec_aes_key);
+        let dec_aes_key: Result<AesKey, _> = dec_aes_key.try_into();
+        let Ok(dec_aes_key) = dec_aes_key else {
+            // println!("tamanho da chave AES errado");
+            return Err(IoError::BadCrypto);
+        };
+        stream.set_aes_key(dec_aes_key);
     } else {
         stream
             .write_plain_msg("ERRO transmissao de chave simetrica\n")
@@ -109,19 +133,28 @@ async fn auth_client(
     Ok(db::User { id, name })
 }
 
-async fn handle_client(db: &'static Db, mut stream: socket::Stream, rsa_key: RsaKey) {
+async fn handle_client(
+    db: &'static Db,
+    mut stream: socket::Stream,
+    rsa_key: RsaKey,
+    pub_key: &'static str,
+) {
     let mut buf = String::new();
     let mut msg = String::new();
 
     let current_user = loop {
-        match auth_client(&db, &mut stream, &rsa_key, &mut buf, &mut msg).await {
+        match auth_client(&db, &mut stream, &rsa_key, pub_key, &mut buf, &mut msg).await {
             Ok(user) => {
                 break user;
             }
             Err(IoError::Failed) => continue,
             Err(IoError::Timeout) => unreachable!(),
-            Err(IoError::Closed | IoError::BadCrypto) => {
-                println!("Failed auth");
+            Err(IoError::Closed) => {
+                eprintln!("CLOSED CONNECTION PLEASE PRINT");
+                return;
+            }
+            Err(IoError::BadCrypto) => {
+                eprintln!("Failed crypto on auth");
                 return;
             }
         }
@@ -331,7 +364,9 @@ async fn handle_client(db: &'static Db, mut stream: socket::Stream, rsa_key: Rsa
                     let _ = writeln!(&mut msg, "BANIDO_DA_SALA {}", room_name);
                     db::User::send_to(db, banned_id, &msg);
                 }
-                closed |= stream.write_msg("BANIMENTO_OK").await.is_err();
+                msg.clear();
+                let _ = writeln!(&mut msg, "BANIMENTO_OK {}", banned_name);
+                closed |= stream.write_msg(&msg).await.is_err();
             }
             None => {
                 closed |= stream
@@ -366,12 +401,14 @@ async fn main() {
     db.execute(include_str!("./populate.sql")).unwrap();
 
     let rsa_key = rsa::Rsa::generate(1024).unwrap();
+    let pub_key = rsa_key.public_key_to_der().unwrap();
+    let pub_key = base64::encode_block(&pub_key).leak();
 
     let addr = std::env::args()
         .nth(1)
         .and_then(|addr| SocketAddr::from_str(&addr).ok())
-        .unwrap_or(SocketAddr::from(([127, 0, 0, 1], 8888)));
-    println!("listening on {}", addr);
+        .unwrap_or(SocketAddr::from(([0, 0, 0, 0], 8080)));
+    eprintln!("(SERVER)\tlistening on {}", addr);
 
     task::spawn(admin(db));
     let listener = TcpListener::bind(addr)
@@ -382,6 +419,8 @@ async fn main() {
         let Ok(stream) = stream else { continue };
         let stream = Stream::new(stream);
         let db = &*db;
-        task::spawn(handle_client(db, stream, rsa_key.clone()));
+        let rsa_key = rsa_key.clone();
+        let pub_key = &*pub_key;
+        task::spawn(handle_client(db, stream, rsa_key, pub_key));
     }
 }

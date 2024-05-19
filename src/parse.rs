@@ -41,7 +41,7 @@ pub fn command<'a>(line: &'a str) -> Option<Command<'a>> {
                 _ => return None,
             };
             let room_name = split.next()?;
-            let pass = split.next().unwrap_or("");
+            let pass = split.remainder().unwrap_or("");
             Some(Command::CreateRoom {
                 room_name,
                 private,
