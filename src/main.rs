@@ -150,11 +150,17 @@ async fn handle_client(
             Err(IoError::Failed) => continue,
             Err(IoError::Timeout) => unreachable!(),
             Err(IoError::Closed) => {
-                eprintln!("CLOSED CONNECTION PLEASE PRINT");
+                eprintln!(
+                    "(SERVER)\tUser on {:?} closed before auth",
+                    stream.peer_addr()
+                );
                 return;
             }
             Err(IoError::BadCrypto) => {
-                eprintln!("Failed crypto on auth");
+                eprintln!(
+                    "(SERVER)\tUser on {:?} failed crypto on auth",
+                    stream.peer_addr()
+                );
                 return;
             }
         }
@@ -173,7 +179,10 @@ async fn handle_client(
             Err(IoError::Timeout) => continue,
             Err(IoError::Failed) => unreachable!(),
             Err(IoError::BadCrypto) => {
-                eprintln!("BAD CRYPTO FOR USER {} - {}", current_user.name, buf);
+                eprintln!(
+                    "(SERVER)\tBAD CRYPTO FOR USER {} - {}",
+                    current_user.name, buf
+                );
                 break 'run;
             }
             Err(IoError::Closed) => {

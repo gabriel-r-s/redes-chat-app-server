@@ -39,6 +39,10 @@ impl Stream {
         self.aes_key = Some(aes_key);
     }
 
+    pub fn peer_addr(&self) -> std::net::SocketAddr {
+        self.stream.get_ref().peer_addr().unwrap()
+    }
+
     pub async fn block_read_plain_line<'a>(
         &mut self,
         buf: &'a mut String,
